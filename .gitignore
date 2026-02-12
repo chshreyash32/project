@@ -1,0 +1,36 @@
+# ======================
+# AI / ML Project Files
+# ======================
+
+# Dataset and training data
+dataset/
+data/
+attendance/
+trainer/
+
+# Model files
+model/
+*.h5
+*.pkl
+
+# Embeddings / numpy files
+*.npz
+*.npy
+
+# CSV data files
+*.csv
+
+# ======================
+# Python
+# ======================
+__pycache__/
+*.pyc
+
+# ======================
+# Virtual Environment
+# ======================
+venv/
+.env
+
+# ======================
+# OS
