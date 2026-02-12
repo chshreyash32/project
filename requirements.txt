@@ -1,6 +1,7 @@
 streamlit
 opencv-contrib-python-headless
-mtcnn
-keras-facenet
 numpy
 pandas
+pillow
+streamlit-webrtc
+av
