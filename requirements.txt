@@ -1,7 +1,6 @@
 streamlit
-opencv-python-headless
-numpy
+opencv-contrib-python-headless
 mtcnn
 keras-facenet
-tensorflow-cpu
+numpy
 pandas
