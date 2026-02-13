@@ -9,6 +9,10 @@ from PIL import Image
 import av
 from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
 import threading
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
 
 # ==========================================
 # 1. CONFIGURATION & STATE MANAGEMENT
@@ -55,8 +59,13 @@ if 'capture_count' not in st.session_state: st.session_state['capture_count'] = 
 if 'attendance_log' not in st.session_state: st.session_state['attendance_log'] = []
 if 'last_marked' not in st.session_state: st.session_state['last_marked'] = {}
 
-# -- WebRTC Configuration --
-RTC_CONFIGURATION = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+# -- WebRTC Configuration (Using Google's STUN server) --
+RTC_CONFIGURATION = RTCConfiguration({
+    "iceServers": [
+        {"urls": ["stun:stun.l.google.com:19302"]},
+        {"urls": ["stun:stun1.l.google.com:19302"]},
+    ]
+})
 
 def navigate_to(page):
     st.session_state['page'] = page
@@ -67,13 +76,11 @@ def navigate_to(page):
 # ==========================================
 st.markdown("""
 <style>
-    /* GLOBAL THEME */
     .stApp {
         background-color: #000000;
         color: #e0e0e0;
     }
     
-    /* INPUT FIELDS - CLEAN & DARK */
     div[data-baseweb="input"] {
         background-color: #111111;
         border: 1px solid #333;
@@ -84,14 +91,12 @@ st.markdown("""
         background-color: #111111;
     }
     
-    /* SELECT BOXES */
     div[data-baseweb="select"] > div {
         background-color: #111111;
         color: white;
         border-color: #333;
     }
 
-    /* BUTTONS - PREMIUM BLUE WITH WHITE TEXT */
     .stButton > button {
         background-color: #007bff;
         color: #ffffff !important;
@@ -112,20 +117,12 @@ st.markdown("""
         color: #ffffff !important;
     }
 
-    /* TEXT HEADERS */
     h1, h2, h3 { color: white !important; font-family: 'Segoe UI', sans-serif; font-weight: 600; }
     p { color: #888; }
     
-    /* TABLE STYLING */
     div[data-testid="stDataFrame"] {
         background-color: #111;
         border: 1px solid #333;
-        border-radius: 10px;
-    }
-    
-    /* VIDEO FRAME */
-    video {
-        border: 3px solid #00ff00;
         border-radius: 10px;
     }
 </style>
@@ -172,62 +169,49 @@ def train_model():
 # ==========================================
 
 class RegistrationProcessor:
-    """Processes video frames for student registration with auto-capture"""
-    
     def __init__(self):
         self.face_cascade = cv2.CascadeClassifier(HAAR_FILE)
         self.frame_count = 0
-        self.lock = threading.Lock()
         
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         
-        # Detect faces
         faces = self.face_cascade.detectMultiScale(gray, 1.3, 5)
         
-        with self.lock:
-            student_id = st.session_state.get('student_internal_id')
-            current_count = st.session_state.get('capture_count', 0)
-            
-            for (x, y, w, h) in faces:
-                # Draw GREEN box around face
-                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 3)
-                
-                # Auto-capture every 15 frames (about 0.5 seconds)
-                if current_count < 30 and self.frame_count % 15 == 0 and student_id:
-                    try:
-                        # Save face image
-                        face_img = gray[y:y+h, x:x+w]
-                        cv2.imwrite(f"{DATA_DIR}/User.{student_id}.{current_count + 1}.jpg", face_img)
-                        st.session_state['capture_count'] = current_count + 1
-                    except Exception as e:
-                        print(f"Error saving image: {e}")
-                
-                # Display count on video
-                cv2.putText(img, f"Captured: {st.session_state.get('capture_count', 0)}/30", 
-                           (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-            
-            # Display message if no face detected
-            if len(faces) == 0:
-                cv2.putText(img, "No Face Detected", (50, 50), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-            
-            self.frame_count += 1
+        student_id = st.session_state.get('student_internal_id')
+        current_count = st.session_state.get('capture_count', 0)
         
+        for (x, y, w, h) in faces:
+            # GREEN BOX
+            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 4)
+            
+            # Auto-capture every 20 frames
+            if current_count < 30 and self.frame_count % 20 == 0 and student_id:
+                face_img = gray[y:y+h, x:x+w]
+                cv2.imwrite(f"{DATA_DIR}/User.{student_id}.{current_count + 1}.jpg", face_img)
+                st.session_state['capture_count'] = current_count + 1
+                logging.info(f"Captured image {current_count + 1}/30")
+            
+            # Display text
+            cv2.putText(img, f"Captured: {st.session_state.get('capture_count', 0)}/30", 
+                       (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+        
+        if len(faces) == 0:
+            cv2.putText(img, "No Face Detected", (50, 50), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
+        
+        self.frame_count += 1
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
 
 class AttendanceProcessor:
-    """Processes video frames for live attendance with face recognition"""
-    
     def __init__(self, subject, periods):
         self.subject = subject
         self.periods = periods
         self.face_cascade = cv2.CascadeClassifier(HAAR_FILE)
         self.recognizer = cv2.face.LBPHFaceRecognizer_create()
         
-        # Load trained model
         model_path = os.path.join(TRAIN_DIR, "trainer.yml")
         if os.path.exists(model_path):
             self.recognizer.read(model_path)
@@ -235,7 +219,6 @@ class AttendanceProcessor:
         else:
             self.model_loaded = False
         
-        self.lock = threading.Lock()
         self.frame_count = 0
         
     def recv(self, frame):
@@ -243,81 +226,58 @@ class AttendanceProcessor:
         
         if not self.model_loaded:
             cv2.putText(img, "Model not trained!", (50, 50), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                       cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 3)
             return av.VideoFrame.from_ndarray(img, format="bgr24")
         
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         faces = self.face_cascade.detectMultiScale(gray, 1.2, 5)
         
-        with self.lock:
-            for (x, y, w, h) in faces:
-                # Draw GREEN box
-                cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 3)
+        for (x, y, w, h) in faces:
+            # GREEN BOX
+            cv2.rectangle(img, (x, y), (x+w, y+h), (0, 255, 0), 4)
+            
+            try:
+                id_internal, confidence = self.recognizer.predict(gray[y:y+h, x:x+w])
                 
-                try:
-                    # Recognize face
-                    id_internal, confidence = self.recognizer.predict(gray[y:y+h, x:x+w])
+                if confidence < 65:
+                    roll_no = get_roll(id_internal)
+                    current_time = datetime.now()
+                    last_marked_time = st.session_state['last_marked'].get(roll_no)
                     
-                    if confidence < 65:  # Good match
-                        roll_no = get_roll(id_internal)
+                    # Mark attendance every 30 frames if not marked in 60s
+                    if (not last_marked_time or (current_time - last_marked_time).seconds > 60) and self.frame_count % 30 == 0:
+                        df = pd.read_csv(CSV_FILE)
+                        df['RollNo'] = df['RollNo'].astype(str)
+                        mask = (df['RollNo'] == str(roll_no)) & (df['Subject'] == self.subject)
                         
-                        # Mark attendance (with cooldown)
-                        current_time = datetime.now()
-                        last_marked_time = st.session_state['last_marked'].get(roll_no)
-                        
-                        # Mark if not marked in last 60 seconds
-                        if not last_marked_time or (current_time - last_marked_time).seconds > 60:
-                            # Only mark every 30 frames (about 1 second)
-                            if self.frame_count % 30 == 0:
-                                try:
-                                    df = pd.read_csv(CSV_FILE)
-                                    df['RollNo'] = df['RollNo'].astype(str)
-                                    mask = (df['RollNo'] == str(roll_no)) & (df['Subject'] == self.subject)
-                                    
-                                    if not df.loc[mask].empty:
-                                        idx = df.index[mask].tolist()[0]
-                                        df.at[idx, 'Held'] = int(df.at[idx, 'Held']) + self.periods
-                                        df.at[idx, 'Attended'] = int(df.at[idx, 'Attended']) + self.periods
-                                        df.at[idx, 'LastUpdated'] = current_time.strftime("%H:%M:%S")
-                                        df.to_csv(CSV_FILE, index=False)
-                                        
-                                        # Update session state
-                                        st.session_state['last_marked'][roll_no] = current_time
-                                        
-                                        # Add to log
-                                        log_msg = f"✅ {roll_no} (+{self.periods})"
-                                        if log_msg not in st.session_state['attendance_log']:
-                                            st.session_state['attendance_log'].insert(0, log_msg)
-                                except Exception as e:
-                                    print(f"Error marking attendance: {e}")
-                        
-                        # Display name on video
-                        cv2.putText(img, str(roll_no), (x, y - 10), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-                        cv2.putText(img, f"Conf: {int(confidence)}", (x, y + h + 30), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    else:
-                        # Unknown face
-                        cv2.putText(img, "Unknown", (x, y - 10), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-                        
-                except Exception as e:
-                    print(f"Recognition error: {e}")
-            
-            # Show frame count
-            cv2.putText(img, f"Frame: {self.frame_count}", (10, 30), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            
-            self.frame_count += 1
+                        if not df.loc[mask].empty:
+                            idx = df.index[mask].tolist()[0]
+                            df.at[idx, 'Held'] = int(df.at[idx, 'Held']) + self.periods
+                            df.at[idx, 'Attended'] = int(df.at[idx, 'Attended']) + self.periods
+                            df.at[idx, 'LastUpdated'] = current_time.strftime("%H:%M:%S")
+                            df.to_csv(CSV_FILE, index=False)
+                            
+                            st.session_state['last_marked'][roll_no] = current_time
+                            
+                            log_msg = f"✅ {roll_no} (+{self.periods})"
+                            if log_msg not in st.session_state['attendance_log']:
+                                st.session_state['attendance_log'].insert(0, log_msg)
+                    
+                    cv2.putText(img, str(roll_no), (x, y - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 0), 3)
+                else:
+                    cv2.putText(img, "Unknown", (x, y - 10), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 3)
+            except:
+                pass
         
+        self.frame_count += 1
         return av.VideoFrame.from_ndarray(img, format="bgr24")
-
 
 # ==========================================
 # 5. PAGES
 # ==========================================
 
-# --- HOME ---
 def page_home():
     st.markdown("<h1 style='text-align: center; margin-bottom: 5px;'>CSE (AIML) Portal</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Gokaraju Rangaraju Institute of Engineering and Technology</p>", unsafe_allow_html=True)
@@ -334,7 +294,6 @@ def page_home():
         st.markdown("Mark attendance and view reports")
         if st.button("Continue as Faculty"): navigate_to("faculty_login")
 
-# --- STUDENT HUB ---
 def page_student_hub():
     if st.button("← Back"): navigate_to("home")
     st.markdown("<br>", unsafe_allow_html=True)
@@ -348,7 +307,6 @@ def page_student_hub():
         st.info("New student registration")
         if st.button("Register Face"): navigate_to("student_register")
 
-# --- STUDENT REGISTER (WITH WEBRTC AUTO-CAPTURE) ---
 def page_student_register():
     if st.button("← Back"): 
         st.session_state['capture_count'] = 0
@@ -388,9 +346,9 @@ def page_student_register():
             st.markdown(f"### Progress: {st.session_state.get('capture_count', 0)}/30")
             st.progress(st.session_state.get('capture_count', 0) / 30)
             
-            st.markdown("**Instructions:**")
             st.success("🟢 GREEN box shows your face")
             st.info("📸 Auto-capturing in progress...")
+            st.markdown("**Tips:**")
             st.markdown("- Look at the camera")
             st.markdown("- Move your face slightly")
             st.markdown("- Different angles help")
@@ -400,18 +358,22 @@ def page_student_register():
         
         with c_cam:
             if st.session_state.get('capture_count', 0) < 30:
-                # Start WebRTC stream with auto-capture
+                st.warning("⚠️ Click START button below to begin camera")
+                
                 webrtc_ctx = webrtc_streamer(
                     key="registration",
                     mode=WebRtcMode.SENDRECV,
                     rtc_configuration=RTC_CONFIGURATION,
                     video_processor_factory=RegistrationProcessor,
-                    async_processing=True,
                     media_stream_constraints={"video": True, "audio": False},
+                    async_processing=True,
                 )
                 
+                if webrtc_ctx.state.playing:
+                    st.success("✅ Camera Active - Auto-capturing!")
+                
             else:
-                st.success("🎉 All 30 images captured! Processing...")
+                st.success("🎉 Processing images...")
                 
                 if train_model():
                     df = pd.read_csv(CSV_FILE)
@@ -438,10 +400,7 @@ def page_student_register():
                         st.session_state['capture_count'] = 0
                         st.session_state['student_internal_id'] = None
                         navigate_to("student_hub")
-                else:
-                    st.error("Model training failed. Please try again.")
 
-# --- STUDENT VIEW ---
 def page_student_view():
     if st.button("← Back"): navigate_to("student_hub")
     st.markdown("<h3>Attendance Records</h3>", unsafe_allow_html=True)
@@ -478,7 +437,6 @@ def page_student_view():
         except Exception as e:
             st.error(f"Error reading database: {e}")
 
-# --- FACULTY LOGIN ---
 def page_faculty_login():
     if st.button("← Home"): navigate_to("home")
     
@@ -500,7 +458,6 @@ def page_faculty_login():
             else:
                 st.error("Invalid Credentials.")
 
-# --- FACULTY DASHBOARD ---
 def page_faculty_dashboard():
     if st.button("← Logout"): navigate_to("home")
     st.markdown("<h2>Faculty Dashboard</h2>", unsafe_allow_html=True)
@@ -526,7 +483,6 @@ def page_faculty_dashboard():
         })
         navigate_to("live_attendance")
 
-# --- LIVE ATTENDANCE (WITH WEBRTC) ---
 def page_live_attendance():
     if st.button("← Back"): 
         st.session_state['last_marked'] = {}
@@ -543,37 +499,34 @@ def page_live_attendance():
     
     with col_log:
         st.markdown("#### 📋 Attendance Log")
-        log_container = st.container()
-        with log_container:
-            if st.session_state['attendance_log']:
-                for log in st.session_state['attendance_log'][:20]:
-                    if "✅" in log:
-                        st.success(log)
-                    else:
-                        st.error(log)
-            else:
-                st.info("Waiting for faces...")
+        if st.session_state['attendance_log']:
+            for log in st.session_state['attendance_log'][:20]:
+                if "✅" in log:
+                    st.success(log)
+        else:
+            st.info("Waiting for faces...")
 
     with col_cam:
         if not os.path.exists(os.path.join(TRAIN_DIR, "trainer.yml")):
             st.error("❌ Model not trained. Register students first.")
         else:
+            st.warning("⚠️ Click START button below to begin camera")
             st.success("🟢 GREEN boxes will appear on recognized faces!")
-            st.info("📹 Attendance marks automatically when faces detected")
             
-            # Create processor with current session data
             def processor_factory():
                 return AttendanceProcessor(sub, periods)
             
-            # Start WebRTC stream
             webrtc_ctx = webrtc_streamer(
                 key="attendance",
                 mode=WebRtcMode.SENDRECV,
                 rtc_configuration=RTC_CONFIGURATION,
                 video_processor_factory=processor_factory,
-                async_processing=True,
                 media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
             )
+            
+            if webrtc_ctx.state.playing:
+                st.success("✅ Camera Active - Marking attendance!")
 
 # ==========================================
 # 6. ROUTER
