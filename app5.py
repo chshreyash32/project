@@ -169,7 +169,7 @@ def train_model():
 def page_home():
     st.markdown("<h1 style='text-align: center; margin-bottom: 5px;'>Intelligent Face Recognition Attendance System</h1>", unsafe_allow_html=True)
     st.markdown("<h5 style='text-align: center;'>Gokaraju Rangaraju Institute of Engineering and Technology</h5>", unsafe_allow_html=True)
-    st.markdown("<p style='text-align: center;'>Department of CSE(AIML)S</p>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Department of CSE(AIML)</p>", unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     
     c1, c2 = st.columns(2)
