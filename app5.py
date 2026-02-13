@@ -139,7 +139,12 @@ def get_roll(internal_id):
     return data.get(str(internal_id), "Unknown")
 
 def train_model():
-    recognizer = cv2.face.LBPHFaceRecognizer_create()
+    try:
+        recognizer = cv2.face.LBPHFaceRecognizer_create()
+    except AttributeError:
+        st.error("❌ OpenCV contrib module not installed. Please install: pip install opencv-contrib-python")
+        return False
+    
     paths = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)]
     faces, ids = [], []
     for path in paths:
