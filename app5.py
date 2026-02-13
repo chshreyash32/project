@@ -167,7 +167,8 @@ def train_model():
 
 # --- HOME ---
 def page_home():
-    st.markdown("<h1 style='text-align: center; margin-bottom: 5px;'>CSE (AIML) Portal</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; margin-bottom: 5px;'>Intelligent Face Recognition Attendance System</h1>", unsafe_allow_html=True)
+    st.markdown("<h5 style='text-align: center;'>Gokaraju Rangaraju Institute of Engineering and Technology</h5>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Gokaraju Rangaraju Institute of Engineering and Technology</p>", unsafe_allow_html=True)
     st.markdown("<br>", unsafe_allow_html=True)
     
