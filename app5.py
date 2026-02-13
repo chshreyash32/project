@@ -6,15 +6,6 @@ import os
 import json
 from datetime import datetime
 from PIL import Image
-import threading
-
-# --- NEW IMPORTS FOR AUTOMATIC VIDEO ---
-try:
-    from streamlit_webrtc import webrtc_streamer, VideoTransformerBase, RTCConfiguration
-    import av
-except ImportError:
-    st.error("⚠️ Libraries missing! Please run: pip install streamlit-webrtc av")
-    st.stop()
 
 # ==========================================
 # 1. CONFIGURATION & STATE MANAGEMENT
@@ -30,7 +21,18 @@ MAPPING_FILE = os.path.join(BASE_DIR, "student_map.json")
 HAAR_FILE = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 
 # -- CONFIG LISTS --
-SUBJECT_LIST = ["Machine Learning", "Big Data Analytics", "Software Engineering", "DSRP", "JCP", "ML Lab", "BDA Lab", "Mini Project", "Constitution of India"]
+SUBJECT_LIST = [
+    "Machine Learning", 
+    "Big Data Analytics", 
+    "Software Engineering", 
+    "DSRP", 
+    "JCP", 
+    "ML Lab", 
+    "BDA Lab", 
+    "Mini Project", 
+    "Constitution of India"
+]
+
 SECTION_LIST = ["Section A", "Section B", "Section C"]
 
 # -- INIT DIRECTORIES --
@@ -46,25 +48,80 @@ if not os.path.exists(MAPPING_FILE):
 
 # -- SESSION STATE --
 if 'page' not in st.session_state: st.session_state['page'] = 'home'
+if 'live_run' not in st.session_state: st.session_state['live_run'] = False
 if 'live_periods' not in st.session_state: st.session_state['live_periods'] = 1
-
-# -- GLOBAL LOCK FOR THREAD SAFETY --
-lock = threading.Lock()
 
 def navigate_to(page):
     st.session_state['page'] = page
     st.rerun()
 
 # ==========================================
-# 2. CUSTOM CSS
+# 2. CUSTOM CSS (PREMIUM MINIMALIST DARK)
 # ==========================================
 st.markdown("""
 <style>
-    .stApp { background-color: #000000; color: #e0e0e0; }
-    div[data-baseweb="input"] { background-color: #111111; border: 1px solid #333; color: white; }
-    .stButton > button { background-color: #007bff; color: white !important; border: none; padding: 10px 20px; width: 100%; }
-    .stButton > button:hover { background-color: #0056b3; }
-    div[data-testid="stDataFrame"] { background-color: #111; }
+    /* GLOBAL THEME */
+    .stApp {
+        background-color: #000000;
+        color: #e0e0e0;
+    }
+    
+    /* INPUT FIELDS - CLEAN & DARK */
+    div[data-baseweb="input"] {
+        background-color: #111111;
+        border: 1px solid #333;
+        border-radius: 8px;
+        color: white;
+    }
+    div[data-baseweb="base-input"] {
+        background-color: #111111;
+    }
+    
+    /* SELECT BOXES */
+    div[data-baseweb="select"] > div {
+        background-color: #111111;
+        color: white;
+        border-color: #333;
+    }
+
+    /* BUTTONS - PREMIUM BLUE WITH WHITE TEXT */
+    .stButton > button {
+        background-color: #007bff;
+        color: #ffffff !important; /* Force White Text */
+        border: none;
+        border-radius: 6px;
+        padding: 12px 20px;
+        font-weight: 600; /* Make text bolder */
+        width: 100%;
+        transition: all 0.3s ease;
+    }
+    
+    /* Ensure text inside button stays white */
+    .stButton > button p {
+        color: #ffffff !important;
+    }
+
+    .stButton > button:hover {
+        background-color: #0056b3;
+        color: #ffffff !important;
+    }
+
+    /* STOP BUTTON RED */
+    div.stButton.stop-btn > button {
+        background-color: #dc3545 !important;
+        color: #ffffff !important;
+    }
+
+    /* TEXT HEADERS */
+    h1, h2, h3 { color: white !important; font-family: 'Segoe UI', sans-serif; font-weight: 600; }
+    p { color: #888; }
+    
+    /* TABLE STYLING */
+    div[data-testid="stDataFrame"] {
+        background-color: #111;
+        border: 1px solid #333;
+        border-radius: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -89,16 +146,14 @@ def get_roll(internal_id):
     return data.get(str(internal_id), "Unknown")
 
 def train_model():
-    if not os.listdir(DATA_DIR): return False
     recognizer = cv2.face.LBPHFaceRecognizer_create()
     paths = [os.path.join(DATA_DIR, f) for f in os.listdir(DATA_DIR)]
     faces, ids = [], []
     for path in paths:
         try:
-            img = np.array(Image.open(path).convert('L'), 'uint8')
-            id_val = int(os.path.split(path)[-1].split(".")[1])
-            faces.append(img)
-            ids.append(id_val)
+            img = Image.open(path).convert('L')
+            faces.append(np.array(img, 'uint8'))
+            ids.append(int(os.path.split(path)[-1].split(".")[1]))
         except: pass
     if faces:
         recognizer.train(faces, np.array(ids))
@@ -107,250 +162,304 @@ def train_model():
     return False
 
 # ==========================================
-# 4. WEBRTC PROCESSORS (THE MAGIC PART)
-# ==========================================
-
-# -- REGISTRATION PROCESSOR --
-class RegistrationProcessor(VideoTransformerBase):
-    def __init__(self):
-        self.count = 0
-        self.limit = 30
-        self.roll = st.session_state.get('reg_roll', 'Unknown')
-        # We need to determine ID only once per session
-        self.internal_id = None 
-
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        detector = cv2.CascadeClassifier(HAAR_FILE)
-        faces = detector.detectMultiScale(gray, 1.3, 5)
-
-        for (x,y,w,h) in faces:
-            cv2.rectangle(img, (x,y), (x+w,y+h), (0,255,0), 2)
-            
-            if self.count < self.limit:
-                # Lazy load ID to avoid reading file on every frame
-                if self.internal_id is None:
-                    # NOTE: Writing to JSON inside thread is risky, assume handled before or use lock
-                    with lock:
-                        self.internal_id = save_mapping(get_next_id(), self.roll)
-                
-                self.count += 1
-                fname = f"{DATA_DIR}/User.{self.internal_id}.{self.count}.jpg"
-                cv2.imwrite(fname, gray[y:y+h,x:x+w])
-                cv2.putText(img, f"Capturing: {self.count}/{self.limit}", (x, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,255), 2)
-            else:
-                cv2.putText(img, "Done! Stop Camera", (x, y-10), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,255,0), 2)
-        
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-# -- ATTENDANCE PROCESSOR --
-class AttendanceProcessor(VideoTransformerBase):
-    def __init__(self):
-        self.recognizer = cv2.face.LBPHFaceRecognizer_create()
-        if os.path.exists(os.path.join(TRAIN_DIR, "trainer.yml")):
-            self.recognizer.read(os.path.join(TRAIN_DIR, "trainer.yml"))
-        self.detector = cv2.CascadeClassifier(HAAR_FILE)
-        self.last_marked = {}
-        # Get context from session state (passed via external check mostly, but tricky in thread)
-        # We will assume global/session state is roughly valid or set defaults
-        self.subject = "Subject" 
-        self.periods = 1
-        
-    def recv(self, frame):
-        img = frame.to_ndarray(format="bgr24")
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        faces = self.detector.detectMultiScale(gray, 1.2, 5)
-
-        for (x,y,w,h) in faces:
-            cv2.rectangle(img, (x,y), (x+w,y+h), (0,255,0), 2)
-            try:
-                id_internal, conf = self.recognizer.predict(gray[y:y+h,x:x+w])
-                if conf < 65:
-                    roll = get_roll(id_internal)
-                    cv2.putText(img, f"{roll}", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
-                    
-                    # MARK ATTENDANCE LOGIC
-                    now = datetime.now()
-                    if roll not in self.last_marked or (now - self.last_marked[roll]).seconds > 60:
-                        with lock: # Thread safe CSV writing
-                            df = pd.read_csv(CSV_FILE)
-                            df['RollNo'] = df['RollNo'].astype(str)
-                            # NOTE: In real deployment, pass subject/periods safely. 
-                            # Here we rely on file state or defaults for simplicity in this snippet.
-                            # For robust app, these should be passed to __init__
-                            pass 
-                        
-                        # Just visual feedback here because passing 'sub' into this thread is complex 
-                        # without factory. We will mark 'Pending' visually.
-                        self.last_marked[roll] = now
-                else:
-                    cv2.putText(img, "Unknown", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
-            except:
-                pass
-        
-        return av.VideoFrame.from_ndarray(img, format="bgr24")
-
-# ==========================================
-# 5. PAGES
+# 4. PAGES
 # ==========================================
 
 # --- HOME ---
 def page_home():
-    st.markdown("<h1 style='text-align: center;'>Face Recognition Attendance</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; margin-bottom: 5px;'>CSE (AIML) Portal</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center;'>Gokaraju Rangaraju Institute of Engineering and Technology</p>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("Student Portal"): navigate_to("student_hub")
+        st.markdown("### 🎓 Student Portal")
+        st.markdown("Login to view attendance or Register")
+        if st.button("Continue as Student"): navigate_to("student_hub")
+    
     with c2:
-        if st.button("Faculty Portal"): navigate_to("faculty_login")
+        st.markdown("### 👨‍🏫 Faculty Login")
+        st.markdown("Mark attendance and view reports")
+        if st.button("Continue as Faculty"): navigate_to("faculty_login")
 
 # --- STUDENT HUB ---
 def page_student_hub():
     if st.button("← Back"): navigate_to("home")
-    st.markdown("## Student Dashboard")
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("<h2>Student Dashboard</h2>", unsafe_allow_html=True)
+    
     c1, c2 = st.columns(2)
-    with c1: 
+    with c1:
+        st.info("Check your attendance status")
         if st.button("View Attendance"): navigate_to("student_view")
-    with c2: 
+    with c2:
+        st.info("New student registration")
         if st.button("Register Face"): navigate_to("student_register")
 
-# --- STUDENT REGISTER ---
+# --- STUDENT REGISTER (FIXED FOR WEB) ---
 def page_student_register():
     if st.button("← Back"): navigate_to("student_hub")
     
     if st.session_state.get('reg_step') != 'capture':
-        st.markdown("### New Registration")
-        name = st.text_input("Name")
-        roll = st.text_input("Roll No")
-        sec = st.selectbox("Section", SECTION_LIST)
-        if st.button("Start Capture"):
-            if name and roll:
-                st.session_state.update({'reg_name': name, 'reg_roll': roll, 'reg_sec': sec, 'reg_step': 'capture'})
-                st.rerun()
-            else: st.error("Fill details")
+        st.markdown("<h3>New Student Registration</h3>", unsafe_allow_html=True)
+        with st.container():
+            col_form, col_space = st.columns([2, 1])
+            with col_form:
+                name = st.text_input("Full Name")
+                roll = st.text_input("Roll Number")
+                section = st.selectbox("Section", SECTION_LIST)
+                
+                st.markdown("<br>", unsafe_allow_html=True)
+                if st.button("Next: Capture Face"):
+                    if name and roll:
+                        st.session_state.update({'reg_name': name, 'reg_roll': roll, 'reg_sec': section, 'reg_step': 'capture', 'reg_count': 0})
+                        st.rerun()
+                    else: st.error("Please fill all details.")
+            
     else:
-        st.markdown(f"### Capturing: {st.session_state['reg_name']}")
-        st.info("Allow camera access. The system will auto-capture 30 frames.")
+        st.markdown(f"<h3>Capturing: {st.session_state['reg_name']}</h3>", unsafe_allow_html=True)
         
-        # WEBRTC STREAMER FOR REGISTRATION
-        ctx = webrtc_streamer(
-            key="registration",
-            video_processor_factory=RegistrationProcessor,
-            rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
-        )
+        if 'reg_count' not in st.session_state:
+            st.session_state['reg_count'] = 0
+            
+        final_id = save_mapping(get_next_id(), st.session_state['reg_roll'])
+        detector = cv2.CascadeClassifier(HAAR_FILE)
         
-        if st.button("Training Complete? Finish"):
-            if train_model():
-                # Add Metadata to CSV
-                df = pd.read_csv(CSV_FILE)
-                df = df[df['RollNo'].astype(str) != st.session_state['reg_roll']]
-                new_rows = []
-                for sub in SUBJECT_LIST:
-                    new_rows.append({
-                        "RollNo": st.session_state['reg_roll'], "Name": st.session_state['reg_name'],
-                        "Subject": sub, "Section": st.session_state['reg_sec'],
-                        "Held": 0, "Attended": 0, "LastUpdated": "-"
-                    })
-                df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
-                df.to_csv(CSV_FILE, index=False)
-                st.success("Registered Successfully!")
-                st.session_state['reg_step'] = None
-                navigate_to("student_hub")
+        c_cam, c_txt = st.columns([2, 1])
+        with c_txt: 
+            st.info(f"Progress: {st.session_state['reg_count']}/30")
+            st.markdown("**Instructions:**")
+            st.markdown("1. Click the camera button below")
+            st.markdown("2. Take a photo of your face")
+            st.markdown("3. Repeat 30 times with slightly different angles")
+            
+        with c_cam:
+            if st.session_state['reg_count'] < 30:
+                img_file = st.camera_input(f"Capture {st.session_state['reg_count'] + 1}/30", key=f"cam_{st.session_state['reg_count']}")
+                
+                if img_file is not None:
+                    # Convert to OpenCV format
+                    image = Image.open(img_file)
+                    frame = np.array(image)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    
+                    # Detect faces
+                    faces = detector.detectMultiScale(gray, 1.3, 5)
+                    
+                    if len(faces) > 0:
+                        for (x,y,w,h) in faces:
+                            st.session_state['reg_count'] += 1
+                            cv2.imwrite(f"{DATA_DIR}/User.{final_id}.{st.session_state['reg_count']}.jpg", gray[y:y+h,x:x+w])
+                        st.rerun()
+                    else:
+                        st.warning("No face detected. Please try again with better lighting.")
             else:
-                st.error("No face data found. Did you capture enough?")
+                st.success("All images captured! Processing...")
+                
+                if train_model():
+                    df = pd.read_csv(CSV_FILE)
+                    df = df[df['RollNo'].astype(str) != st.session_state['reg_roll']]
+                    
+                    new_rows = []
+                    for sub in SUBJECT_LIST:
+                        new_rows.append({
+                            "RollNo": st.session_state['reg_roll'], "Name": st.session_state['reg_name'],
+                            "Subject": sub, "Section": st.session_state['reg_sec'],
+                            "Held": 0, "Attended": 0, "LastUpdated": "-"
+                        })
+                    df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
+                    df.to_csv(CSV_FILE, index=False)
+                    
+                    st.success("✅ Registration Successful!")
+                    if st.button("Finish"):
+                        st.session_state['reg_step'] = None
+                        st.session_state['reg_count'] = 0
+                        navigate_to("student_hub")
 
 # --- STUDENT VIEW ---
 def page_student_view():
     if st.button("← Back"): navigate_to("student_hub")
-    roll = st.text_input("Roll Number")
-    if st.button("Check"):
-        df = pd.read_csv(CSV_FILE)
-        data = df[df['RollNo'].astype(str) == roll]
-        st.dataframe(data)
+    st.markdown("<h3>Attendance Records</h3>", unsafe_allow_html=True)
+    
+    roll = st.text_input("Enter Roll Number")
+    
+    if st.button("Check Attendance"):
+        try:
+            df = pd.read_csv(CSV_FILE)
+            df['RollNo'] = df['RollNo'].astype(str)
+            data = df[df['RollNo'] == roll]
+            
+            if not data.empty:
+                st.markdown(f"#### Student: {data.iloc[0]['Name']} ({roll})")
+                
+                table_data = []
+                for _, row in data.iterrows():
+                    h = int(row['Held'])
+                    a = int(row['Attended'])
+                    p = (a/h)*100 if h > 0 else 0
+                    
+                    table_data.append({
+                        "Subject": row['Subject'],
+                        "Section": row['Section'],
+                        "Held": h,
+                        "Attended": a,
+                        "Percentage": f"{p:.1f}%",
+                        "Last Updated": row['LastUpdated']
+                    })
+                
+                st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
+            else:
+                st.error("No records found. Please register first.")
+        except Exception as e:
+            st.error(f"Error reading database: {e}")
 
 # --- FACULTY LOGIN ---
 def page_faculty_login():
     if st.button("← Home"): navigate_to("home")
-    u = st.text_input("ID")
-    p = st.text_input("Password", type="password")
-    if st.button("Login"):
-        if u == "1234" and p == "1234": navigate_to("faculty_dashboard")
-        else: st.error("Invalid")
+    
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    c_spacer, c_login, c_spacer2 = st.columns([1, 2, 1])
+    
+    with c_login:
+        st.markdown("### Faculty Login")
+        st.markdown("<p style='color:#888; font-size:14px;'>Enter your 4-digit Faculty ID.</p>", unsafe_allow_html=True)
+        
+        u = st.text_input("Faculty ID")
+        p = st.text_input("Password", type="password")
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        if st.button("Login"):
+            if len(u) == 4 and u.isdigit() and u == p:
+                navigate_to("faculty_dashboard")
+            else:
+                st.error("Invalid Credentials.")
 
 # --- FACULTY DASHBOARD ---
 def page_faculty_dashboard():
-    if st.button("Logout"): navigate_to("home")
-    st.markdown("## Faculty Dashboard")
-    sub = st.selectbox("Subject", SUBJECT_LIST)
-    periods = st.selectbox("Periods", [1,2,3])
-    if st.button("Start Live Attendance"):
-        st.session_state.update({'live_sub': sub, 'live_periods': periods})
+    if st.button("← Logout"): navigate_to("home")
+    st.markdown("<h2>Faculty Dashboard</h2>", unsafe_allow_html=True)
+    st.markdown("#### Setup Attendance Session")
+    
+    c1, c2 = st.columns(2)
+    with c1: sub = st.selectbox("Subject", SUBJECT_LIST)
+    with c2: sec = st.selectbox("Section", SECTION_LIST)
+    
+    c3, c4 = st.columns(2)
+    with c3:
+        periods = st.selectbox("No. of Periods", [1, 2, 3, 4])
+    
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    if st.button("🚀 Start Live Attendance"):
+        st.session_state.update({
+            'live_sub': sub, 
+            'live_sec': sec, 
+            'live_periods': periods,
+            'live_run': False
+        })
         navigate_to("live_attendance")
 
-# --- LIVE ATTENDANCE (AUTOMATIC) ---
+# --- LIVE ATTENDANCE (FIXED FOR WEB) ---
 def page_live_attendance():
-    if st.button("← Back"): navigate_to("faculty_dashboard")
-    st.markdown(f"### Live: {st.session_state['live_sub']}")
+    c_back, c_title = st.columns([1, 5])
+    with c_back: 
+        if st.button("← Back"): navigate_to("faculty_dashboard")
     
-    # Passing arguments to the thread using a closure/factory
-    class LiveProcessor(VideoTransformerBase):
-        def __init__(self):
-            self.recognizer = cv2.face.LBPHFaceRecognizer_create()
-            if os.path.exists(os.path.join(TRAIN_DIR, "trainer.yml")):
-                self.recognizer.read(os.path.join(TRAIN_DIR, "trainer.yml"))
-            self.detector = cv2.CascadeClassifier(HAAR_FILE)
-            self.last_marked = {}
-            self.sub = st.session_state['live_sub']
-            self.per = st.session_state['live_periods']
+    sub = st.session_state.get('live_sub')
+    sec = st.session_state.get('live_sec')
+    periods = st.session_state.get('live_periods')
+    
+    st.markdown(f"<h3>Live Class: {sub} ({sec})</h3>", unsafe_allow_html=True)
+    st.markdown(f"**Adding {periods} Period(s) per student**")
 
-        def recv(self, frame):
-            img = frame.to_ndarray(format="bgr24")
-            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-            faces = self.detector.detectMultiScale(gray, 1.2, 5)
+    col_cam, col_log = st.columns([2, 1])
+    
+    with col_log:
+        st.markdown("#### Attendance Log")
+        if 'attendance_log' not in st.session_state:
+            st.session_state['attendance_log'] = []
+        log_ph = st.empty()
 
-            for (x,y,w,h) in faces:
-                cv2.rectangle(img, (x,y), (x+w,y+h), (0,255,0), 2)
-                try:
-                    id_internal, conf = self.recognizer.predict(gray[y:y+h,x:x+w])
+    with col_cam:
+        st.markdown("**Take attendance photo:**")
+        st.info("Click 'Take Photo' when students are ready. The system will detect and mark attendance.")
+        
+        img_file = st.camera_input("Capture attendance", key="attendance_cam")
+        
+        if img_file is not None:
+            if not os.path.exists(os.path.join(TRAIN_DIR, "trainer.yml")):
+                st.error("Model not trained. Please register students first.")
+            else:
+                # Process the captured image
+                recognizer = cv2.face.LBPHFaceRecognizer_create()
+                recognizer.read(os.path.join(TRAIN_DIR, "trainer.yml"))
+                face_cascade = cv2.CascadeClassifier(HAAR_FILE)
+                
+                # Convert to OpenCV format
+                image = Image.open(img_file)
+                frame = np.array(image)
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                
+                # Detect faces
+                faces = face_cascade.detectMultiScale(gray, 1.2, 5)
+                
+                marked_students = []
+                
+                for (x,y,w,h) in faces:
+                    cv2.rectangle(frame, (x,y), (x+w,y+h), (0,255,0), 2)
+                    id_internal, conf = recognizer.predict(gray[y:y+h,x:x+w])
+                    
                     if conf < 65:
-                        roll = get_roll(id_internal)
-                        now = datetime.now()
+                        real_roll = get_roll(id_internal)
                         
-                        # COOLDOWN & DB WRITE
-                        if roll not in self.last_marked or (now - self.last_marked[roll]).seconds > 60:
-                            with lock:
+                        # Check if already marked in this session
+                        if real_roll not in marked_students:
+                            try:
                                 df = pd.read_csv(CSV_FILE)
                                 df['RollNo'] = df['RollNo'].astype(str)
-                                mask = (df['RollNo'] == str(roll)) & (df['Subject'] == self.sub)
+                                mask = (df['RollNo'] == str(real_roll)) & (df['Subject'] == sub)
+                                
                                 if not df.loc[mask].empty:
                                     idx = df.index[mask].tolist()[0]
-                                    df.at[idx, 'Held'] = int(df.at[idx, 'Held']) + self.per
-                                    df.at[idx, 'Attended'] = int(df.at[idx, 'Attended']) + self.per
-                                    df.at[idx, 'LastUpdated'] = now.strftime("%H:%M:%S")
+                                    
+                                    # Update count
+                                    df.at[idx, 'Held'] = int(df.at[idx, 'Held']) + periods
+                                    df.at[idx, 'Attended'] = int(df.at[idx, 'Attended']) + periods
+                                    df.at[idx, 'LastUpdated'] = datetime.now().strftime("%H:%M:%S")
                                     df.to_csv(CSV_FILE, index=False)
-                                    self.last_marked[roll] = now
+                                    
+                                    marked_students.append(real_roll)
+                                    st.session_state['attendance_log'].insert(0, f"✅ {real_roll} (+{periods})")
+                                else:
+                                    st.session_state['attendance_log'].insert(0, f"⚠️ {real_roll} not registered for {sub}")
+                            except Exception as e:
+                                st.session_state['attendance_log'].insert(0, f"❌ Error: {str(e)}")
                         
-                        # STATUS ON VIDEO
-                        status = "Marked" if (roll in self.last_marked and (now - self.last_marked[roll]).seconds < 60) else "Processing"
-                        color = (0,255,0) if status == "Marked" else (0,255,255)
-                        cv2.putText(img, f"{roll}: {status}", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                        cv2.putText(frame, f"{real_roll}", (x,y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
                     else:
-                        cv2.putText(img, "Unknown", (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
-                except: pass
-            
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
+                        cv2.putText(frame, "Unknown", (x,y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,255), 2)
+                
+                # Display processed image
+                st.image(frame, channels="BGR", caption=f"Detected {len(faces)} face(s)")
+                
+                if marked_students:
+                    st.success(f"Marked attendance for: {', '.join(marked_students)}")
+                else:
+                    st.warning("No known students detected in this image.")
 
-    # START STREAM
-    webrtc_streamer(
-        key="attendance",
-        video_processor_factory=LiveProcessor,
-        rtc_configuration=RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
-    )
+    # Display log in right column
+    with col_log:
+        log_html = ""
+        for l in st.session_state['attendance_log'][:15]:
+            color = "#00e676" if "✅" in l else "#ff1744"
+            log_html += f"<div style='color: {color}; margin-bottom: 5px; font-family: monospace;'>{l}</div>"
+        log_ph.markdown(log_html, unsafe_allow_html=True)
 
 # ==========================================
-# 6. ROUTER
+# 5. ROUTER
 # ==========================================
 if st.session_state['page'] == "home": page_home()
 elif st.session_state['page'] == "student_hub": page_student_hub()
