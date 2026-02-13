@@ -196,9 +196,14 @@ def page_student_hub():
         st.info("New student registration")
         if st.button("Register Face"): navigate_to("student_register")
 
-# --- STUDENT REGISTER (FIXED FOR WEB) ---
+# --- STUDENT REGISTER (AUTO-CAPTURE FOR WEB) ---
 def page_student_register():
-    if st.button("← Back"): navigate_to("student_hub")
+    if st.button("← Back"): 
+        # Reset capture state when going back
+        st.session_state['reg_step'] = None
+        st.session_state['reg_count'] = 0
+        st.session_state['capture_active'] = False
+        navigate_to("student_hub")
     
     if st.session_state.get('reg_step') != 'capture':
         st.markdown("<h3>New Student Registration</h3>", unsafe_allow_html=True)
@@ -212,7 +217,14 @@ def page_student_register():
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("Next: Capture Face"):
                     if name and roll:
-                        st.session_state.update({'reg_name': name, 'reg_roll': roll, 'reg_sec': section, 'reg_step': 'capture', 'reg_count': 0})
+                        st.session_state.update({
+                            'reg_name': name, 
+                            'reg_roll': roll, 
+                            'reg_sec': section, 
+                            'reg_step': 'capture', 
+                            'reg_count': 0,
+                            'capture_active': False
+                        })
                         st.rerun()
                     else: st.error("Please fill all details.")
             
@@ -221,41 +233,72 @@ def page_student_register():
         
         if 'reg_count' not in st.session_state:
             st.session_state['reg_count'] = 0
+        if 'capture_active' not in st.session_state:
+            st.session_state['capture_active'] = False
             
         final_id = save_mapping(get_next_id(), st.session_state['reg_roll'])
         detector = cv2.CascadeClassifier(HAAR_FILE)
         
         c_cam, c_txt = st.columns([2, 1])
+        
         with c_txt: 
-            st.info(f"Progress: {st.session_state['reg_count']}/30")
+            # Progress indicator
+            progress_pct = (st.session_state['reg_count'] / 30) * 100
+            st.markdown(f"### Progress: {st.session_state['reg_count']}/30")
+            st.progress(progress_pct / 100)
+            
             st.markdown("**Instructions:**")
-            st.markdown("1. Click the camera button below")
-            st.markdown("2. Take a photo of your face")
-            st.markdown("3. Repeat 30 times with slightly different angles")
+            st.markdown("1. Click 'Start Auto-Capture' below")
+            st.markdown("2. Look at the camera")
+            st.markdown("3. Move your face slightly for variety")
+            st.markdown("4. Images capture automatically!")
+            
+            if st.session_state['reg_count'] < 30:
+                if not st.session_state['capture_active']:
+                    if st.button("🚀 Start Auto-Capture"):
+                        st.session_state['capture_active'] = True
+                        st.rerun()
+                else:
+                    st.success("✅ Auto-capture in progress...")
+                    if st.button("⏸ Pause Capture"):
+                        st.session_state['capture_active'] = False
+                        st.rerun()
             
         with c_cam:
             if st.session_state['reg_count'] < 30:
-                img_file = st.camera_input(f"Capture {st.session_state['reg_count'] + 1}/30", key=f"cam_{st.session_state['reg_count']}")
-                
-                if img_file is not None:
-                    # Convert to OpenCV format
-                    image = Image.open(img_file)
-                    frame = np.array(image)
-                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                # Auto-capture using dynamic key to force refresh
+                if st.session_state['capture_active']:
+                    img_file = st.camera_input(
+                        f"Auto-Capturing... ({st.session_state['reg_count']}/30)", 
+                        key=f"cam_{st.session_state['reg_count']}",
+                        disabled=False
+                    )
                     
-                    # Detect faces
-                    faces = detector.detectMultiScale(gray, 1.3, 5)
-                    
-                    if len(faces) > 0:
-                        for (x,y,w,h) in faces:
-                            st.session_state['reg_count'] += 1
-                            cv2.imwrite(f"{DATA_DIR}/User.{final_id}.{st.session_state['reg_count']}.jpg", gray[y:y+h,x:x+w])
-                        st.rerun()
-                    else:
-                        st.warning("No face detected. Please try again with better lighting.")
+                    if img_file is not None:
+                        # Convert to OpenCV format
+                        image = Image.open(img_file)
+                        frame = np.array(image)
+                        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+                        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                        
+                        # Detect faces
+                        faces = detector.detectMultiScale(gray, 1.3, 5)
+                        
+                        if len(faces) > 0:
+                            for (x,y,w,h) in faces:
+                                st.session_state['reg_count'] += 1
+                                cv2.imwrite(f"{DATA_DIR}/User.{final_id}.{st.session_state['reg_count']}.jpg", gray[y:y+h,x:x+w])
+                            
+                            # Auto-refresh to capture next image
+                            import time
+                            time.sleep(0.5)  # Small delay between captures
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ No face detected. Adjust position/lighting.")
+                else:
+                    st.info("👆 Click 'Start Auto-Capture' to begin")
             else:
-                st.success("All images captured! Processing...")
+                st.success("✅ All images captured! Processing...")
                 
                 if train_model():
                     df = pd.read_csv(CSV_FILE)
@@ -264,17 +307,22 @@ def page_student_register():
                     new_rows = []
                     for sub in SUBJECT_LIST:
                         new_rows.append({
-                            "RollNo": st.session_state['reg_roll'], "Name": st.session_state['reg_name'],
-                            "Subject": sub, "Section": st.session_state['reg_sec'],
-                            "Held": 0, "Attended": 0, "LastUpdated": "-"
+                            "RollNo": st.session_state['reg_roll'], 
+                            "Name": st.session_state['reg_name'],
+                            "Subject": sub, 
+                            "Section": st.session_state['reg_sec'],
+                            "Held": 0, 
+                            "Attended": 0, 
+                            "LastUpdated": "-"
                         })
                     df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
                     df.to_csv(CSV_FILE, index=False)
                     
-                    st.success("✅ Registration Successful!")
+                    st.success("🎉 Registration Successful!")
                     if st.button("Finish"):
                         st.session_state['reg_step'] = None
                         st.session_state['reg_count'] = 0
+                        st.session_state['capture_active'] = False
                         navigate_to("student_hub")
 
 # --- STUDENT VIEW ---
